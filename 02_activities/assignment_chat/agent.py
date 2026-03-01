@@ -25,7 +25,7 @@ import news_api_caller
 print(" --- 100% - Imports are done...")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / "assignment_2\\.secrets")
+load_dotenv(BASE_DIR / "assignment_chat\\.secrets")
 openai_key = os.getenv('API_GATEWAY_KEY')
 mediastack_key = os.getenv('API_MEDIASTACK_KEY')
 
