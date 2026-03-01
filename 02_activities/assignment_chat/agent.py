@@ -244,8 +244,9 @@ def analyze_request(original_request: str, table_result: DataFrame):
     analyzed_responce = model.invoke(
         f"""
         Take this table result and find any entries that user might be looking for, given the original request. Account for possible misspellings.
+        If there are found entries - make sure to provide detailed summary that includes what country imposed sanctions on this entity and why.
         If no entries were found - suggest user try to search for affiliated organizations, in case if target is not in sanctions list directly, but can be tied
-        to an organization within instead
+        to an organization within instead.
         ---
         Name variations to look for:
         {response.all_possible_names_misspellings}
