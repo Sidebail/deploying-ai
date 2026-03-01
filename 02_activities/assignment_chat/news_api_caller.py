@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 print(BASE_DIR)
-load_dotenv(BASE_DIR / "assignment_2\\.secrets")
+load_dotenv(BASE_DIR / "assignment_chat\\.secrets")
 openai_key = os.getenv('API_GATEWAY_KEY')
 
 from openai import OpenAI
