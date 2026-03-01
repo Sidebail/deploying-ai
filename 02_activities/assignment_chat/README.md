@@ -13,5 +13,5 @@ uv add duckdb
 uv add country-converter
 
 ### MAKE SURE TO CREATE .SECRETS FILE IN SAME DIRECTION AS AGENT.PY
-> .secrets file has to have the API_GATEWAY_KEY and API_MEDIASTACK_KEY
-> For latter you can use mine: db1421584ecce977bcffa1813de30073
+> .secrets file has to have the API_GATEWAY_KEY and API_MEDIASTACK_KEY and API_TAVILY_KEY
+> For Mediastack you can use mine: db1421584ecce977bcffa1813de30073

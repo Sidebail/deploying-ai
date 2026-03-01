@@ -21,6 +21,9 @@ from pydantic import BaseModel, Field
 import re
 import http.client, urllib.parse
 import news_api_caller
+import sys
+import traceback
+from langchain_tavily import TavilySearch
 
 print(" --- 100% - Imports are done...")
 
@@ -28,6 +31,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / "assignment_chat\\.secrets")
 openai_key = os.getenv('API_GATEWAY_KEY')
 mediastack_key = os.getenv('API_MEDIASTACK_KEY')
+tavily_key = os.getenv('API_TAVILY_KEY')
 
 model = init_chat_model(
     "openai:gpt-4o-mini",
@@ -37,11 +41,14 @@ model = init_chat_model(
     default_headers={"x-api-key": openai_key}
 )
 
+tavily_search = TavilySearch(tavily_api_key=tavily_key, max_results=10)
+
 print(" --- Model ready! - Loading data...")
 
 
 print("Connecting to Mediastack...")
 mediastack = http.client.HTTPConnection('api.mediastack.com')
+print("MediaStack connected!")
 
 
 day = datetime.now().date()
@@ -148,9 +155,25 @@ def resolve_user_request(user_message: str):
     
     return response
 
+class NamesModel(BaseModel):
+    names: list[str]=Field(description="All names User requested to look for")
+
+def resolve_names(original_request: str):
+    names_model = model.with_structured_output(NamesModel, method="json_schema")
+    response = names_model.invoke(
+        f"""
+        Look for all names user requested about. Fill them into names_model
+        ---
+        User's request:
+        {original_request}
+        """)
+    return response.names
+
+
 class MisspellingsList(BaseModel):
     all_possible_names_misspellings: list[str]=Field(description="Last Names only. List of strings with all possible name variations given the user can misspell the name")
     first_names: list[str]=Field(description="All human first names made when making misspellings array")
+    originnaly_typed_name: str=Field(description="Original name how user typed it")
 
 def resolve_misspellings(original_request: str):
 
@@ -171,6 +194,7 @@ def resolve_misspellings(original_request: str):
         """
     )
 
+    response.all_possible_names_misspellings.append(response.originnaly_typed_name)
     unique_names = list({
         word
         for entry in response.all_possible_names_misspellings
@@ -220,6 +244,8 @@ def analyze_request(original_request: str, table_result: DataFrame):
     analyzed_responce = model.invoke(
         f"""
         Take this table result and find any entries that user might be looking for, given the original request. Account for possible misspellings.
+        If no entries were found - suggest user try to search for affiliated organizations, in case if target is not in sanctions list directly, but can be tied
+        to an organization within instead
         ---
         Name variations to look for:
         {response.all_possible_names_misspellings}
@@ -262,7 +288,7 @@ def get_countries_query(country_codes:list[str]):
 
     country_query = ""
     if len(country_codes) == 1:
-        country_query = f"AND countries LIKE '%{country_codes[0].lower()}%'"
+        country_query = f"AND countries LIKE '%{country_codes.lower()}%'"
     else:
         #country_query = f"AND countries IN ({','.join([f"'{c}'" for c in country_codes])})"
         country_query = f"AND (countries LIKE '%{country_codes[0].lower()}%'"
@@ -384,6 +410,54 @@ def add_to_hisotry(user_request: str, agent_responce: str):
     user_requests_history = user_requests_history[-MAX_MEMORY_SIZE:]
     responces_history = responces_history[-MAX_MEMORY_SIZE:]
 
+def build_queries(last_names):
+    queries = []
+    
+    for name in last_names:
+        queries.append(f'"{name}" worked for employment history affiliated with organization board member CEO')
+        queries.append(f'"{name}" LinkedIn')
+        queries.append(f'"{name}" Headhunter hh.ru')
+        queries.append(f'"{name}" работал устроен клиент заказчик начальник директор управляющий руководитель')
+    
+    return queries
+
+class OrganizationsLookupInfo(BaseModel):
+    organization_names: list[str]=Field(description="List of organizations that people with given surnames might be connected to.")
+
+@tool
+def search_web_for_connections(original_request: str):
+    """
+    Searches the web for possible connections of the person or organization who user mentioned to different organizations, workplaces or directors or owners.
+    """
+    print("trying web_search!")
+    names = resolve_names(original_request)
+    queries = build_queries(names)
+    results_text = ""
+    
+    for q in queries:
+        results = tavily_search.invoke(q)
+        for r in results['results']:
+            results_text += f"{r['title']}\n{r['content'][:15000]}\n{r['url']}\n\n"
+
+    print(f"WEB SEARCH RESULTS LEN: {len(results_text)}")
+    structured_req = model.with_structured_output(OrganizationsLookupInfo, method="json_schema")
+    print("INVOKING...")
+    data_lookup = structured_req.invoke(
+        f"""
+        You are tasked to find possible affiliations of given people last names with various organizations in given Web Search Result. 
+        You should look specifically if person might've worked in the company or was it's client or did any service for that company.
+        Put names of found companies in organization_names list
+        ---
+        Target People Last Names:
+        {str(names)}
+        ---
+        Web Search Result:
+        {results_text}
+        """)
+    
+    print("GOR ORGS: " + str(data_lookup.organization_names))
+    return data_lookup
+
 @tool
 def check_history(current_user_request: str):
     """
@@ -418,7 +492,7 @@ def call_news_api(user_request: str):
     return news_api_caller.get_news(mediastack, mediastack_key, user_request)
 
 # Augment the LLM with tools
-tools = [check_history, call_news_api, get_column_names, find_all_of_names, find_all_of_names_and_countries, find_all_wildcards_from_column, find_all_of_organization_and_countries]
+tools = [check_history, call_news_api, get_column_names, find_all_of_names, find_all_of_names_and_countries, find_all_wildcards_from_column, find_all_of_organization_and_countries, search_web_for_connections]
 tools_by_name = {tool.name: tool for tool in tools}
 model_with_tools = model.bind_tools(tools)
 
@@ -529,12 +603,15 @@ def generate_responce(user_input, history):
                 add_to_hisotry(user_request=user_input, agent_responce=m.content)
                 return m.content
     except Exception as e:
-        res = f"ERROR:{e}\n\n---\n An error occured, please try again!"
+        exc_type, exc_obj, exc_tb = sys.exc_info()
+        line_number = exc_tb.tb_lineno
+        res = f"ERROR:{e}\nLine: {line_number}\n{type(e).__name__}\n\n---\n An error occured, please try again!"
+        traceback.print_exc()
         return res
 
 gr.ChatInterface(
     fn=generate_responce, 
-).queue().launch()
+).queue().launch(server_name="0.0.0.0", share=True)
 
 exit(0)
 
